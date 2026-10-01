@@ -27,21 +27,66 @@ const isoDate = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 
 const dayNumberOfIso = (s) => { const [y, m, d] = s.split('-').map(Number); return Math.floor(Date.UTC(y, m - 1, d) / 86400000); };
 
 /* ---------- storage (IndexedDB, with in-memory fallback) ---------- */
+/* ---------- Data safety ----------
+   Your marks live in this device's IndexedDB. App updates only replace code files, never this database, and database
+   upgrades only ADD stores (never delete or rewrite). As a second line of defence, before any database upgrade the
+   current data is copied into a separate database ('esv-bible-safety'), and Settings can restore from it. */
+const DB_NAME = 'esv-bible', DB_VERSION = 5, SAFETY_DB = 'esv-bible-safety';
+const USER_STORES = ['highlights', 'notes', 'bookmarks', 'plans', 'habit', 'tags', 'prayers', 'church'];
+function safetyOpen() {
+  return new Promise((res, rej) => { const r = indexedDB.open(SAFETY_DB, 1); r.onupgradeneeded = () => r.result.createObjectStore('snaps', { keyPath: 'id' }); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
+}
+async function safetyPut(snap) {
+  const db = await safetyOpen();
+  await new Promise((res, rej) => {
+    const t = db.transaction('snaps', 'readwrite'); const st = t.objectStore('snaps'); st.put(snap);
+    st.getAllKeys().onsuccess = (e) => { const keys = e.target.result.sort(); while (keys.length > 3) st.delete(keys.shift()); };   // keep the three newest
+    t.oncomplete = res; t.onerror = () => rej(t.error);
+  });
+  db.close();
+}
+async function safetyList() {
+  try { const db = await safetyOpen(); const all = await new Promise((res) => { const q = db.transaction('snaps').objectStore('snaps').getAll(); q.onsuccess = () => res(q.result); q.onerror = () => res([]); }); db.close(); return all.sort((a, b) => b.t - a.t); }
+  catch { return []; }
+}
+function preUpgradeSnapshot() {   // opens the existing database WITHOUT upgrading it, and copies the user stores if an upgrade is pending
+  return new Promise((resolve) => {
+    let r; try { r = indexedDB.open(DB_NAME); } catch { return resolve(); }
+    r.onupgradeneeded = () => { try { r.transaction.abort(); } catch { /* nothing exists yet */ } resolve(); };
+    r.onerror = () => resolve();
+    r.onsuccess = async () => {
+      const db = r.result;
+      try {
+        if (db.version < DB_VERSION) {
+          const names = USER_STORES.filter((n) => db.objectStoreNames.contains(n)); const data = {}; let count = 0;
+          await Promise.all(names.map((n) => new Promise((res) => { const q = db.transaction(n).objectStore(n).getAll(); q.onsuccess = () => { data[n] = q.result; count += q.result.length; res(); }; q.onerror = () => res(); })));
+          if (count) await safetyPut({ id: 'snap-' + Date.now(), t: Date.now(), fromVersion: db.version, toVersion: DB_VERSION, counts: Object.fromEntries(names.map((n) => [n, (data[n] || []).length])), data });
+        }
+      } catch { /* a failed safety copy must never block the app */ }
+      db.close(); resolve();
+    };
+  });
+}
+
 const idb = (() => {
   let db = null; const mem = { highlights: new Map(), notes: new Map(), bookmarks: new Map(), plans: new Map(), habit: new Map(), tags: new Map(), prayers: new Map(), bible: new Map(), church: new Map() };
   let nextId = 1; let persistent = false;
   const keyOf = { highlights: 'ref', notes: 'id', bookmarks: 'ref', plans: 'id', habit: 'date', tags: 'ref', prayers: 'id', bible: 'id', church: 'id' };
-  const open = () => new Promise((resolve) => {
-    if (!('indexedDB' in window)) return resolve();
+  const open = async () => {
+    if (!('indexedDB' in window)) return;
+    try { await preUpgradeSnapshot(); } catch { /* ignore */ }
+    return openMain();
+  };
+  const openMain = () => new Promise((resolve) => {
     try {
-      const r = indexedDB.open('esv-bible', 5);
+      const r = indexedDB.open(DB_NAME, DB_VERSION);
       r.onupgradeneeded = () => {
         const d = r.result;
         const make = (name, keyPath, opts = {}) => { if (!d.objectStoreNames.contains(name)) d.createObjectStore(name, { keyPath, ...opts }); };
         make('highlights', 'ref'); make('notes', 'id', { autoIncrement: true }); make('bookmarks', 'ref');
         make('plans', 'id'); make('habit', 'date'); make('tags', 'ref'); make('prayers', 'id', { autoIncrement: true }); make('bible', 'id'); make('church', 'id', { autoIncrement: true });
       };
-      r.onsuccess = () => { db = r.result; persistent = true; resolve(); };
+      r.onsuccess = () => { db = r.result; db.onversionchange = () => { db.close(); location.reload(); }; persistent = true; resolve(); };   // a newer copy of the app may upgrade the database
       r.onerror = () => resolve();
     } catch { resolve(); }
   });
@@ -392,6 +437,13 @@ function fmtChapterList(keys) {   // ["42:3","42:4"] -> [{ b, c, label: "John 3�
   for (const [b, c] of items) { if (cur && cur.b === b && c === cur.c2 + 1) cur.c2 = c; else { cur = { b, c1: c, c2: c }; out.push(cur); } }
   return out.map((x) => ({ b: x.b, c: x.c1, label: `${BOOKS[x.b].n} ${x.c1 === x.c2 ? x.c1 : `${x.c1}–${x.c2}`}` }));
 }
+function backupReminder() {   // a gentle nudge when you have things worth protecting and no recent backup
+  const items = U.notes.length + U.hl.size + U.prayers.length + U.church.length + [...U.habit.values()].filter((r) => r.journal).length;
+  if (items < 3) return '';
+  const last = store.get('lastBackup', 0); const days = last ? Math.floor((Date.now() - last) / 86400000) : Infinity;
+  if (days < 14) return '';
+  return `<section class="backupnote"><div class="eyebrow">Back up</div><button class="jtoday" data-act="gotab" data-tab="settings"><span>${last ? `Last backup was ${days} days ago.` : 'You haven\u2019t backed up yet.'} Tap to save a copy of your notes, highlights and prayers.</span><svg viewBox="0 0 24 24"><path d="M9 5l7 7-7 7"/></svg></button></section>`;
+}
 function journalSection() {
   const today = isoDate(); const t = U.habit.get(today);
   const entries = [...U.habit.values()].filter((r) => r.journal && r.date !== today).sort((a, b) => (a.date < b.date ? 1 : -1));
@@ -427,7 +479,7 @@ async function saveJournal(iso, clear) {
 }
 
 /* ---------- Tags (categories for verses) ---------- */
-const DEFAULT_TAGS = ['Prayer', 'Praise', 'Life verse', 'Studying', 'Promise', 'Encouragement', 'Memorize'];
+const DEFAULT_TAGS = ['Prayer', 'Praise', 'Life verse', 'Studying', 'Encouragement', 'Memorize'];
 const cleanTag = (t) => t.replace(/\s+/g, ' ').trim().slice(0, 40);
 const sameTag = (a, b) => a.toLowerCase() === b.toLowerCase();
 const tagsOf = (ref) => U.tags.get(ref)?.tags || [];
@@ -459,7 +511,8 @@ function tagEditorBody() {
     return `<button class="tagchip${on ? ' on' : ''}" data-act="tagtoggle" data-tag="${esc(name)}">${esc(name)}</button>`;
   }).join('');
   return `<div class="muted small" style="margin-bottom:14px">Tap a tag to add or remove it. You’ll find everything under each tag in the Library.</div><div class="tagchips">${chips}</div>` +
-    `<form class="tagadd" data-submit="tagadd"><input id="tag-new" placeholder="New tag…" maxlength="40" autocomplete="off" autocapitalize="words" enterkeyhint="done"><button class="btn primary" type="submit">Add</button></form>` +
+    `<button class="tagchip custom" data-act="tagcustom">+ Custom tag</button>` +
+    `<form class="tagadd" data-submit="tagadd" hidden><input id="tag-new" placeholder="Name your tag" maxlength="40" autocomplete="off" autocapitalize="words" enterkeyhint="done"><button class="btn primary" type="submit">Add</button></form>` +
     `<div class="row" style="margin-top:22px"><button class="btn" data-act="closemodal">Done</button></div>`;
 }
 function openTagEditor() {
@@ -787,7 +840,7 @@ function renderToday() {
     `<section class="habit"><div class="stats"><div><b>${streak}</b><span>day streak</span></div><div><b>${total}</b><span>days read</span></div></div>` +
     `<div class="week">${week}</div>${readToday ? '<div class="status">✓ You’ve read today</div>' : ''}` +
     `<button class="linkbtn" data-act="calendar">${CALOPEN ? 'Hide calendar' : 'Show calendar'}</button>${CALOPEN ? `<div class="calwrap">${calendarHTML()}</div>` : ''}</section>`;
-  html += journalSection() + prayerHomeSection();
+  html += journalSection() + prayerHomeSection() + backupReminder();
   [...U.plans.values()].filter((p) => p.start).forEach((p) => {
     const def = PLANS.find((x) => x.id === p.id); if (!def) return;
     const day = Math.min(def.days - 1, Math.max(0, dayNumber() - dayNumberOfIso(p.start))); const done = p.done?.[day];
@@ -1019,13 +1072,26 @@ function renderSettings() {
   setTop('Settings', {});
   setView(`<div class="page"><div class="card" id="settings-controls">${settingsControls()}</div>` +
     `<div class="card"><h2>Your data</h2><div class="muted small" style="margin-bottom:10px">Highlights, notes, bookmarks and plan progress are stored only on this device. Export a backup now and then, especially before clearing Safari data or changing phones.</div>` +
+    `<div class="small" style="margin-bottom:10px">Last backup: <b>${lastBackupLabel()}</b></div>` +
     `<div class="row"><button class="btn" data-act="export">Export backup</button><button class="btn" data-act="import">Import backup</button></div><input type="file" id="importfile" accept="application/json" hidden>` +
+    `<div id="safety-box" class="small muted" style="margin-top:12px"></div>` +
     `<div class="small muted" id="storage-status" style="margin-top:10px"></div></div>` +
     `<div class="card"><h2>Bible text</h2><div class="small muted" style="margin-bottom:10px">${esc(EDITION)} \u00B7 ${FT.length.toLocaleString()} verses, saved on this device. Import a new esv.json here if you ever rebuild it.</div>` +
     `<div class="row"><button class="btn" data-act="importbible">Import esv.json</button></div><input type="file" id="biblefile" accept=".json,application/json" hidden></div>` +
     `<div class="card"><h2>Offline</h2><div id="offline-status" class="small">Checking…</div></div>` +
     `<div class="card"><h2>About</h2><div class="small muted">${esc(EDITION)} · App v${APP_VERSION}<br><br>${esc(NOTICE)}</div></div></div>`);
-  offlineStatus(); storageStatus();
+  offlineStatus(); storageStatus(); fillSafetyBox();
+}
+const lastBackupLabel = () => { const t = store.get('lastBackup', 0); return t ? dayTitle(isoDate(new Date(t)), false) : 'never'; };
+async function fillSafetyBox() {
+  const box = $('#safety-box'); if (!box) return; const snaps = await safetyList(); if (!snaps.length) return;
+  const x = snaps[0]; const n = Object.values(x.counts || {}).reduce((a, b) => a + b, 0);
+  box.innerHTML = `An automatic safety copy was made before the last storage update (${esc(dayTitle(isoDate(new Date(x.t)), false))}, ${n} item${n === 1 ? '' : 's'}). ` +
+    `<button class="linkbtn" style="padding:0;display:inline" data-act="restoresafety" data-id="${esc(x.id)}">Restore it</button>`;
+}
+async function restoreSafety(id) {
+  const x = (await safetyList()).find((y) => y.id === id); if (!x) return;
+  const n = await mergeUserData(x.data); toast(n ? `Restored ${n} item${n === 1 ? '' : 's'}` : 'Nothing was missing'); renderSettings();
 }
 async function offlineStatus() {
   const el = $('#offline-status'); if (!el) return;
@@ -1046,22 +1112,54 @@ async function exportBackup() {
   const data = { app: 'esv-bible', version: 1, exported: new Date().toISOString(), highlights: [...U.hl.values()], notes: U.notes, bookmarks: [...U.bm.values()], plans: [...U.plans.values()], habit: [...U.habit.values()], tags: [...U.tags.values()], prayers: U.prayers, church: U.church, settings: S };
   const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
   const file = new File([blob], `esv-bible-backup-${isoDate()}.json`, { type: 'application/json' });
-  try { if (navigator.canShare?.({ files: [file] })) { await navigator.share({ files: [file], title: 'ESV Bible backup' }); return; } } catch (e) { if (e.name === 'AbortError') return; }
+  try { if (navigator.canShare?.({ files: [file] })) { await navigator.share({ files: [file], title: 'ESV Bible backup' }); store.set('lastBackup', Date.now()); if (TAB === 'settings') renderSettings(); return; } } catch (e) { if (e.name === 'AbortError') return; }
+  store.set('lastBackup', Date.now()); if (TAB === 'settings') renderSettings();
   const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = file.name; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+}
+async function mergeUserData(d) {   // adds what is missing and keeps what is newer; running it twice changes nothing
+  let added = 0; const stamp = (x) => x.updated || x.t || 0;
+  for (const h of d.highlights || []) { const cur = U.hl.get(h.ref); if (!cur || (h.t || 0) > (cur.t || 0)) { U.hl.set(h.ref, h); await idb.put('highlights', h); added++; } }
+  for (const b of d.bookmarks || []) { if (!U.bm.has(b.ref)) { U.bm.set(b.ref, b); await idb.put('bookmarks', b); added++; } }
+  for (const t of d.tags || []) { const cur = tagsOf(t.ref); const merged = [...cur]; (t.tags || []).forEach((x) => { if (!merged.some((m) => sameTag(m, x))) merged.push(x); }); if (merged.length !== cur.length) { await writeTags(t.ref, merged); added++; } }
+  for (const n of d.notes || []) {
+    if (U.notes.some((x) => x.b === n.b && x.c === n.c && x.v1 === n.v1 && x.v2 === n.v2 && (x.t === n.t || x.text === n.text))) continue;
+    const o = { ...n }; delete o.id; o.id = await idb.put('notes', o); U.notes.push(o); added++;
+  }
+  for (const p of d.prayers || []) {
+    const cur = U.prayers.find((x) => x.created === p.created && x.who === p.who);
+    if (!cur) { const o = { ...p }; delete o.id; o.id = await idb.put('prayers', o); U.prayers.push(o); added++; continue; }
+    const dates = [...new Set([...(cur.prayed || []), ...(p.prayed || [])])]; let changed = dates.length !== (cur.prayed || []).length;
+    if (changed) cur.prayed = dates;
+    if (p.answered && !cur.answered) { cur.answered = true; cur.answeredAt = p.answeredAt; cur.answeredNote = p.answeredNote; changed = true; }
+    if (changed) { await idb.put('prayers', cur); added++; }
+  }
+  for (const e of d.church || []) {
+    const cur = U.church.find((x) => x.created === e.created && x.date === e.date);
+    if (!cur) { const o = { ...e }; delete o.id; o.id = await idb.put('church', o); U.church.push(o); added++; }
+    else if (stamp(e) > stamp(cur)) { const o = { ...e, id: cur.id }; await idb.put('church', o); U.church = U.church.map((x) => (x.id === cur.id ? o : x)); added++; }
+  }
+  for (const h of d.habit || []) {
+    const rec = typeof h === 'string' ? { date: h, t: Date.now(), chapters: [], journal: '' } : h; const cur = U.habit.get(rec.date);
+    if (!cur) { U.habit.set(rec.date, rec); await idb.put('habit', rec); added++; continue; }
+    const chapters = [...new Set([...(cur.chapters || []), ...(rec.chapters || [])])]; let changed = chapters.length !== (cur.chapters || []).length;
+    if (changed) cur.chapters = chapters;
+    if (!cur.journal && rec.journal) { cur.journal = rec.journal; changed = true; }
+    if (cur.read === false && rec.read !== false) { cur.read = true; changed = true; }
+    if (changed) { await idb.put('habit', cur); added++; }
+  }
+  for (const p of d.plans || []) {
+    const cur = U.plans.get(p.id);
+    if (!cur) { U.plans.set(p.id, p); await idb.put('plans', p); added++; continue; }
+    const done = { ...(p.done || {}), ...(cur.done || {}) }; if (Object.keys(done).length !== Object.keys(cur.done || {}).length) { cur.done = done; await idb.put('plans', cur); added++; }
+  }
+  return added;
 }
 async function importBackup(file) {
   try {
     const d = JSON.parse(await file.text());
     if (d.app !== 'esv-bible') throw new Error('Not an ESV Bible backup');
-    for (const h of d.highlights || []) { U.hl.set(h.ref, h); await idb.put('highlights', h); }
-    for (const b of d.bookmarks || []) { U.bm.set(b.ref, b); await idb.put('bookmarks', b); }
-    for (const p of d.plans || []) { U.plans.set(p.id, p); await idb.put('plans', p); }
-    for (const t of d.tags || []) { const merged = [...tagsOf(t.ref)]; (t.tags || []).forEach((x) => { if (!merged.some((m) => sameTag(m, x))) merged.push(x); }); await writeTags(t.ref, merged); }
-    for (const ch of d.church || []) { const o = { ...ch }; delete o.id; const id = await idb.put('church', o); o.id = id; U.church.push(o); }
-    for (const pr of d.prayers || []) { const o = { ...pr }; delete o.id; const id = await idb.put('prayers', o); o.id = id; U.prayers.push(o); }
-    for (const h of d.habit || []) { const rec = typeof h === 'string' ? { date: h, t: Date.now(), chapters: [], journal: '' } : h; U.habit.set(rec.date, rec); await idb.put('habit', rec); }
-    for (const n of d.notes || []) { const o = { ...n }; delete o.id; const id = await idb.put('notes', o); o.id = id; U.notes.push(o); }
-    toast('Backup imported'); renderSettings();
+    const n = await mergeUserData(d);
+    toast(n ? `Backup restored (${n} item${n === 1 ? '' : 's'} added)` : 'Everything in that backup is already here'); renderSettings();
   } catch (e) { toast('Import failed: ' + e.message); }
 }
 
@@ -1080,6 +1178,7 @@ const ACT = {
   editnote: (e) => openNoteEditor(U.notes.find((n) => n.id === +e.dataset.id)),
   bookmark: toggleBookmark, copy: copySelection,
   tags: openTagEditor,
+  tagcustom: (e) => { e.hidden = true; const f = $('form.tagadd'); f.hidden = false; $('#tag-new').focus(); },
   tagtoggle: async (e) => { const vs = selectedVerses(); const name = e.dataset.tag; const on = !vs.every((v) => tagsOf(refKey(R.b, R.c, v)).some((t) => sameTag(t, name))); await setTagForSelection(name, on); refreshTagEditor(); },
   tagopen: (e) => { L.tag = e.dataset.tag; renderLibrary(); },
   tagback: () => { L.tag = null; renderLibrary(); },
@@ -1129,6 +1228,7 @@ const ACT = {
     saveSettings(); refreshSettingsUI();
   },
   export: exportBackup,
+  restoresafety: (e) => restoreSafety(e.dataset.id),
   import: () => $('#importfile').click(),
   importbible: () => $('#biblefile').click(),
 };
@@ -1207,6 +1307,7 @@ function showImportScreen(message) {
 async function start(d) {
   applyData(d);
   await loadUser(); buildPlans();
+  try { navigator.storage?.persist?.(); } catch { /* optional */ }   // ask the browser not to evict this data
   const pos = store.get('pos', { b: 0, c: 1 }); if (BOOKS[pos.b] && pos.c <= chapterCount(pos.b)) { R.b = pos.b; R.c = pos.c; }
   $('#view').addEventListener('scroll', trackPosition, { passive: true });
   setTab('today');
@@ -1223,6 +1324,6 @@ async function init() {
   }
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => { /* offline install unavailable */ });
 }
-window.__esv = { parseRef, runSearch, verseText, get books() { return BOOKS; }, openChapter, setTab }; // handy for testing in dev tools
+window.__esv = { mergeUserData, safetyList, get U() { return U; }, parseRef, runSearch, verseText, get books() { return BOOKS; }, openChapter, setTab }; // handy for testing in dev tools
 init();
 })();
