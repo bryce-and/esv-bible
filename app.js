@@ -408,7 +408,7 @@ function openDay(iso) {
   const rec = U.habit.get(iso); const chs = rec?.chapters?.length ? fmtChapterList(rec.chapters) : [];
   const read = chs.length
     ? `<div>${chs.map((x) => `<button class="chip link" data-act="goto" data-b="${x.b}" data-c="${x.c}">${esc(x.label)}</button>`).join('')}</div>`
-    : `<div class="muted small">${rec && rec.read !== false ? 'Logged as read. The passages weren’t recorded for this day.' : iso === isoDate() ? `Chapters you read for ${READ_SECONDS} seconds appear here.` : 'No reading logged.'}</div>`;
+    : `<div class="muted small">${rec && rec.read !== false ? 'Logged as read. The passages weren’t recorded for this day.' : 'No reading logged.'}</div>`;
   openModal(dayTitle(iso),
     `<div class="eyebrow">Read</div>${read}<div class="eyebrow" style="margin-top:24px">Journal</div>` +
     `<textarea class="note-input" id="journal-text" placeholder="What did you learn? What stood out?">${esc(rec?.journal || '')}</textarea>` +
