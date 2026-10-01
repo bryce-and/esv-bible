@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>ESV Bible</title>
+<meta name="description" content="Offline ESV Bible reader">
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#fbfaf7" id="meta-theme">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="ESV Bible">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="icon" type="image/png" href="icon-192.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app">
+  <header id="topbar">
+    <button id="top-title" class="top-title" data-act="picker" aria-label="Choose book and chapter"></button>
+    <div id="top-actions"></div>
+  </header>
+  <main id="view" tabindex="-1"></main>
+  <div id="sheet" class="sheet" hidden></div>
+  <nav id="tabs" aria-label="Main">
+    <button data-tab="today"><svg viewBox="0 0 24 24"><path d="M4 11l8-7 8 7v8a1 1 0 01-1 1h-4v-6H9v6H5a1 1 0 01-1-1z"/></svg><span>Home</span></button>
+    <button data-tab="read"><svg viewBox="0 0 24 24"><path d="M12 6c-1.800-1.300-4-2-7-2v14c3 0 5.200.700 7 2 1.800-1.300 4-2 7-2V4c-3 0-5.200.700-7 2zM12 6v14"/></svg><span>Read</span></button>
+    <button data-tab="prayer"><svg viewBox="0 0 24 24"><path d="M12 20s-7-4.500-7-10a4 4 0 017-2.600A4 4 0 0119 10c0 5.500-7 10-7 10z"/></svg><span>Prayer</span></button>
+    <button data-tab="search"><svg viewBox="0 0 24 24"><circle cx="10.500" cy="10.500" r="6"/><path d="M15 15l5 5"/></svg><span>Search</span></button>
+    <button data-tab="library"><svg viewBox="0 0 24 24"><path d="M7 4h10v16l-5-3.500L7 20z"/></svg><span>Library</span></button>
+  </nav>
+</div>
+<div id="modal" class="modal" hidden></div>
+<div id="toast" role="status" aria-live="polite"></div>
+<div id="splash"><div class="splash-box"><div class="splash-title">ESV Bible</div><div id="splash-msg">Loading…</div></div></div>
+<script src="app.js"></script>
+</body>
+</html>
