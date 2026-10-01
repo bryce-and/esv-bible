@@ -1,6 +1,6 @@
 // Service worker: precache the whole app (including the Bible text) so everything works offline.
 // Bump CACHE when any shipped file changes, so installed copies refresh.
-const CACHE = 'esv-bible-v5';
+const CACHE = 'esv-bible-v7';
 const SHELL = [
   './', 'index.html', 'style.css', 'app.js', 'manifest.webmanifest',
   'icon-192.png', 'icon-512.png', 'apple-touch-icon.png',

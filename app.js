@@ -28,18 +28,18 @@ const dayNumberOfIso = (s) => { const [y, m, d] = s.split('-').map(Number); retu
 
 /* ---------- storage (IndexedDB, with in-memory fallback) ---------- */
 const idb = (() => {
-  let db = null; const mem = { highlights: new Map(), notes: new Map(), bookmarks: new Map(), plans: new Map(), habit: new Map(), tags: new Map(), prayers: new Map(), bible: new Map() };
+  let db = null; const mem = { highlights: new Map(), notes: new Map(), bookmarks: new Map(), plans: new Map(), habit: new Map(), tags: new Map(), prayers: new Map(), bible: new Map(), church: new Map() };
   let nextId = 1; let persistent = false;
-  const keyOf = { highlights: 'ref', notes: 'id', bookmarks: 'ref', plans: 'id', habit: 'date', tags: 'ref', prayers: 'id', bible: 'id' };
+  const keyOf = { highlights: 'ref', notes: 'id', bookmarks: 'ref', plans: 'id', habit: 'date', tags: 'ref', prayers: 'id', bible: 'id', church: 'id' };
   const open = () => new Promise((resolve) => {
     if (!('indexedDB' in window)) return resolve();
     try {
-      const r = indexedDB.open('esv-bible', 4);
+      const r = indexedDB.open('esv-bible', 5);
       r.onupgradeneeded = () => {
         const d = r.result;
         const make = (name, keyPath, opts = {}) => { if (!d.objectStoreNames.contains(name)) d.createObjectStore(name, { keyPath, ...opts }); };
         make('highlights', 'ref'); make('notes', 'id', { autoIncrement: true }); make('bookmarks', 'ref');
-        make('plans', 'id'); make('habit', 'date'); make('tags', 'ref'); make('prayers', 'id', { autoIncrement: true }); make('bible', 'id');
+        make('plans', 'id'); make('habit', 'date'); make('tags', 'ref'); make('prayers', 'id', { autoIncrement: true }); make('bible', 'id'); make('church', 'id', { autoIncrement: true });
       };
       r.onsuccess = () => { db = r.result; persistent = true; resolve(); };
       r.onerror = () => resolve();
@@ -55,7 +55,7 @@ const idb = (() => {
     async all(name) { return db ? tx(name, 'readonly', (s) => s.getAll()) : [...mem[name].values()]; },
     async put(name, val) {
       if (db) return tx(name, 'readwrite', (s) => s.put(val));
-      if ((name === 'notes' || name === 'prayers') && !val.id) val.id = nextId++;
+      if ((name === 'notes' || name === 'prayers' || name === 'church') && !val.id) val.id = nextId++;
       mem[name].set(val[keyOf[name]], val); return val[keyOf[name]];
     },
     async del(name, key) { return db ? tx(name, 'readwrite', (s) => s.delete(key)) : void mem[name].delete(key); },
@@ -142,11 +142,12 @@ function parseRef(input) {
 }
 
 /* ---------- user data ---------- */
-const U = { hl: new Map(), notes: [], bm: new Map(), plans: new Map(), habit: new Map(), tags: new Map(), prayers: [] };
+const U = { hl: new Map(), notes: [], bm: new Map(), plans: new Map(), habit: new Map(), tags: new Map(), prayers: [], church: [] };
 async function loadUser() {
   (await idb.all('habit')).forEach((h) => U.habit.set(h.date, h));
   (await idb.all('tags')).forEach((t) => U.tags.set(t.ref, t));
   U.prayers = await idb.all('prayers');
+  U.church = await idb.all('church');
   (await idb.all('highlights')).forEach((h) => U.hl.set(h.ref, h));
   U.notes = await idb.all('notes');
   (await idb.all('bookmarks')).forEach((b) => U.bm.set(b.ref, b));
@@ -175,10 +176,10 @@ const SR = { q: '', shown: 100, scope: 'all' };
 function setTab(tab) {
   TAB = tab; clearSelection(true); stopReadTimer();
   $$('#tabs button').forEach((b) => b.classList.toggle('on', b.dataset.tab === tab));
-  ({ today: renderToday, read: renderRead, prayer: renderPrayer, search: renderSearch, library: renderLibrary, settings: renderSettings })[tab]();
+  ({ today: renderToday, read: renderRead, prayer: renderPrayer, church: renderChurch, search: renderSearch, library: renderLibrary, settings: renderSettings })[tab]();
 }
 function refreshAfterEdit() {
-  if (TAB === 'prayer') renderPrayer(); else if (TAB === 'today') renderToday(); else if (TAB === 'library') renderLibrary(); else if (TAB === 'search') drawResults();
+  if (TAB === 'church') renderChurch(); else if (TAB === 'prayer') renderPrayer(); else if (TAB === 'today') renderToday(); else if (TAB === 'library') renderLibrary(); else if (TAB === 'search') drawResults();
 }
 function setTop(title, { picker = false, actions = '' } = {}) {
   const t = $('#top-title'); t.textContent = title + (picker ? ' ▾' : ''); t.dataset.act = picker ? 'picker' : ''; t.classList.toggle('plain', !picker);
@@ -499,11 +500,12 @@ async function deleteTag(name) {
 }
 
 /* ---------- Prayer list: who/what to pray for and why, checked off each day ---------- */
-const prayedToday = (p) => (p.prayed || []).includes(isoDate());
+// A check stays until you remove it. (Lists made before this change start with today's check, if any.)
+const isChecked = (p) => (p.checked !== undefined ? !!p.checked : (p.prayed || []).includes(isoDate()));
 const byCreated = (a, b) => (a.created || 0) - (b.created || 0);
 function prayerSummary() {
   const active = U.prayers.filter((p) => !p.answered);
-  return { total: active.length, done: active.filter(prayedToday).length };
+  return { total: active.length, done: active.filter(isChecked).length };
 }
 function renderPrayer() {
   setTop('Prayer', { actions: '<button data-act="prayeradd" aria-label="Add to prayer list"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button>' });
@@ -512,16 +514,16 @@ function renderPrayer() {
   const { total, done } = prayerSummary();
   let html = '<div class="page">';
   if (!active.length) {
-    html += '<div class="empty"><div class="empty-title">Your prayer list</div><p class="muted">Add the people and needs you want to bring to God, and why. Check them off as you pray; the list resets each day.</p>' +
+    html += '<div class="empty"><div class="empty-title">Your prayer list</div><p class="muted">Add the people and needs you want to bring to God, and why. Check them off as you pray. Checks stay until you uncheck them, and a request leaves the list when you mark it answered.</p>' +
       '<button class="btn primary" data-act="prayeradd">Add the first one</button></div>';
   } else {
-    html += `<div class="prayprog"><span><b>${done}</b> of ${total} prayed today</span></div><div class="progress"><i style="width:${Math.round(done / total * 100)}%"></i></div>` +
+    html += `<div class="prayprog"><span><b>${done}</b> of ${total} checked off</span>${done ? '<button class="linkbtn" style="padding:0" data-act="prayeruncheck">Uncheck all</button>' : ''}</div><div class="progress"><i style="width:${Math.round(done / total * 100)}%"></i></div>` +
       '<ul class="list prayers">' + active.map((p) => {
-        const on = prayedToday(p);
+        const on = isChecked(p);
         return `<li class="prayer${on ? ' done' : ''}"><button class="check${on ? ' on' : ''}" data-act="prayertoggle" data-id="${p.id}" aria-label="Prayed for ${esc(p.who)}">${on ? '✓' : ''}</button>` +
           `<div class="pbody" data-act="prayeredit" data-id="${p.id}"><div class="who">${esc(p.who)}</div>${p.why ? `<div class="why">${esc(p.why)}</div>` : ''}</div></li>`;
       }).join('') + '</ul>';
-    if (done === total) html += '<div class="allset">All prayed for today.</div>';
+    if (done === total) html += '<div class="allset">Everything is checked off.</div>';
   }
   if (answered.length) {
     html += `<div class="eyebrow" style="margin:30px 0 6px">Answered (${answered.length})</div><ul class="list prayers answered">` +
@@ -533,8 +535,8 @@ function renderPrayer() {
 async function savePrayer(p) { const id = await idb.put('prayers', p); p.id = p.id || id; if (!U.prayers.includes(p)) U.prayers.push(p); return p; }
 async function togglePrayed(id) {
   const p = U.prayers.find((x) => x.id === id); if (!p) return;
-  const d = isoDate(); const list = p.prayed || [];
-  p.prayed = list.includes(d) ? list.filter((x) => x !== d) : [...list, d];
+  p.checked = !isChecked(p);
+  if (p.checked) { const d = isoDate(); const list = p.prayed || []; if (!list.includes(d)) p.prayed = [...list, d]; }   // history for "Prayed for on N days"
   await idb.put('prayers', p);
   if (TAB === 'prayer') { const t = $('#view').scrollTop; renderPrayer(); $('#view').scrollTop = t; }
 }
@@ -587,9 +589,144 @@ async function deletePrayer(id) {
 }
 function prayerHomeSection() {
   const { total, done } = prayerSummary();
-  const label = total ? `${done} of ${total} prayed today` : 'Add people and needs to pray for';
+  const label = total ? `${done} of ${total} checked off` : 'Add people and needs to pray for';
   return `<section class="prayhome"><div class="eyebrow">Prayer</div><button class="jtoday" data-act="gotab" data-tab="prayer"><span>${label}${total ? `<div class="progress" style="margin:8px 0 0"><i style="width:${Math.round(done / total * 100)}%"></i></div>` : ''}</span>` +
     '<svg viewBox="0 0 24 24"><path d="M9 5l7 7-7 7"/></svg></button></section>';
+}
+
+/* ---------- Church notes: dated notes with a bold title, headings, bullets and ESV verses ---------- */
+const CH = { entry: null, focus: 0, saveTimer: null, dirty: false };
+const blankBlock = () => ({ t: 'p', x: '' });
+const chEmpty = (e) => !e.title.trim() && e.blocks.every((b) => b.t !== 'v' && !b.x.trim());
+const chVerseText = (b) => rangeText(b.b, b.c, b.v1, b.v2 || b.v1);      // verse blocks store only the reference; the text always comes from the Bible data
+const chBody = (e) => e.blocks.map((b) => (b.t === 'v' ? `${fmtRef(b.b, b.c, b.v1, b.v2)} ${chVerseText(b)}` : b.x)).filter((x) => x && x.trim()).join(' · ');
+const chText = (e) => `${e.title} ${chBody(e)} ${dayTitle(e.date)} ${e.date}`;
+const chIcon = (d) => `<svg viewBox="0 0 24 24">${d}</svg>`;
+function renderChurch() {
+  setTop('Church notes', { actions: `<button data-act="churchnew" aria-label="New church note">${chIcon('<path d="M12 5v14M5 12h14"/>')}</button>` });
+  const items = [...U.church].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : (b.created || 0) - (a.created || 0)));
+  let html = '<div class="page">';
+  if (!items.length) {
+    html += '<div class="empty"><div class="empty-title">Church notes</div><p class="muted">Sermon notes, what stood out, verses to remember. Each note is dated automatically, and you can add headings and drop in ESV verses.</p><button class="btn primary" data-act="churchnew">New note</button></div>';
+  } else {
+    html += '<ul class="list">' + items.map((e) => {
+      const verses = e.blocks.filter((b) => b.t === 'v').length; const body = e.blocks.filter((b) => b.t !== 'v' && b.x.trim()).map((b) => b.x.trim())[0] || '';
+      return `<li class="item" data-open data-act="churchopen" data-id="${e.id}"><div class="ref">${esc(dayTitle(e.date, false))}${verses ? badge(`${verses} verse${verses === 1 ? '' : 's'}`) : ''}</div>` +
+        `<div class="ctitle">${esc(e.title.trim() || 'Untitled')}</div>${body ? `<div class="jtxt muted">${esc(body.length > 140 ? body.slice(0, 140).trimEnd() + '…' : body)}</div>` : ''}</li>`;
+    }).join('') + '</ul>';
+  }
+  setView(html + '</div>');
+}
+function chBlockHTML(bl, i) {
+  if (bl.t === 'v') {
+    return `<div class="cblock cverse" data-i="${i}"><div class="cvtext">${esc(chVerseText(bl))}</div><div class="cvref">${esc(fmtRef(bl.b, bl.c, bl.v1, bl.v2))} ESV</div>` +
+      `<button class="cx" data-act="chdelblock" data-i="${i}" aria-label="Remove verse">${chIcon('<path d="M7 7l10 10M17 7L7 17"/>')}</button></div>`;
+  }
+  const ph = bl.t === 'h' ? 'Heading' : bl.t === 'li' ? 'List item' : (i === 0 && CH.entry.blocks.length === 1 ? 'Start writing…' : '');
+  return `<div class="cblock c-${bl.t}" data-i="${i}">${bl.t === 'li' ? '<span class="bul">•</span>' : ''}<textarea rows="1" data-i="${i}" placeholder="${ph}" aria-label="${bl.t === 'h' ? 'Heading' : 'Note text'}">${esc(bl.x)}</textarea></div>`;
+}
+const chAutosize = (ta) => { ta.style.height = 'auto'; ta.style.height = ta.scrollHeight + 'px'; };
+function chRender(focusIdx, caret) {
+  $('#ch-blocks').innerHTML = CH.entry.blocks.map(chBlockHTML).join('');
+  $$('#ch-blocks textarea').forEach(chAutosize);
+  if (focusIdx != null) {
+    const ta = $(`#ch-blocks textarea[data-i="${focusIdx}"]`);
+    if (ta) { ta.focus(); const c = caret == null ? ta.value.length : caret; ta.setSelectionRange(c, c); CH.focus = focusIdx; }
+  }
+}
+function chFitViewport() {   // keep the editor above the on-screen keyboard
+  const m = $('#modal'); const vv = window.visualViewport;
+  if (!MODAL.ctx.church || !vv || m.hidden) return;
+  m.style.top = vv.offsetTop + 'px'; m.style.height = vv.height + 'px'; m.style.bottom = 'auto';
+}
+window.visualViewport?.addEventListener('resize', chFitViewport);
+window.visualViewport?.addEventListener('scroll', chFitViewport);
+function openChurchEditor(id) {
+  const existing = id ? U.church.find((x) => x.id === id) : null;
+  CH.entry = existing ? JSON.parse(JSON.stringify(existing)) : { date: isoDate(), title: '', blocks: [blankBlock()], created: Date.now() };
+  if (!CH.entry.blocks.length) CH.entry.blocks = [blankBlock()];
+  CH.focus = 0; CH.dirty = false; MODAL.ctx = { church: true };
+  const m = $('#modal'); const e = CH.entry;
+  m.innerHTML = `<div class="modal-head"><button class="iconbtn" data-act="churchback" aria-label="Back to church notes">${chIcon('<path d="M15 5l-7 7 7 7"/>')}</button>` +
+    `<span class="chdate"><span id="ch-datelabel">${esc(dayTitle(e.date))}</span><input type="date" id="ch-date" value="${esc(e.date)}" aria-label="Date of this note"></span>` +
+    `<button class="iconbtn" data-act="churchdel" aria-label="Delete this note">${chIcon('<path d="M5 7h14M10 7V5h4v2M7 7l1 12h8l1-12"/>')}</button></div>` +
+    `<div class="modal-body church" id="church-body"><textarea id="ch-title" class="ch-title" rows="1" placeholder="Title" maxlength="120" autocomplete="off" enterkeyhint="next" aria-label="Title">${esc(e.title)}</textarea>` +
+    '<div id="ch-blocks"></div></div>' +
+    '<div class="vpanel" id="vpanel" hidden><div class="vp-row"><input id="vp-input" placeholder="Verse, e.g. Psalm 23:1 or John 3:16-18" autocapitalize="off" autocomplete="off" spellcheck="false" enterkeyhint="done">' +
+    '<button class="btn" data-act="chverseclose">Cancel</button></div><div id="vp-preview" class="vp-preview"></div></div>' +
+    `<div class="ctools" id="ch-tools"><button data-act="chheading" aria-label="Heading"><b>H</b><span>Heading</span></button>` +
+    `<button data-act="chbullet" aria-label="Bullet list">${chIcon('<circle cx="6" cy="8" r="1"/><circle cx="6" cy="16" r="1"/><path d="M10 8h9M10 16h9"/>')}<span>Bullet</span></button>` +
+    `<button data-act="chverse" aria-label="Add a Bible verse">${chIcon('<path d="M12 6c-1.800-1.300-4-2-7-2v14c3 0 5.200.700 7 2 1.800-1.300 4-2 7-2V4c-3 0-5.200.700-7 2zM12 6v14"/>')}<span>Verse</span></button>` +
+    `<button data-act="chdone" aria-label="Close keyboard">${chIcon('<path d="M5 12l5 5 9-10"/>')}<span>Done</span></button></div>`;
+  m.hidden = false; chRender(null); chAutosize($('#ch-title')); chFitViewport();
+  if (!existing) $('#ch-title').focus();
+}
+function chSchedule() { CH.dirty = true; clearTimeout(CH.saveTimer); CH.saveTimer = setTimeout(chSave, 600); }
+async function chSave() {
+  clearTimeout(CH.saveTimer); const e = CH.entry; if (!e) return;
+  if (!e.id && chEmpty(e)) return;                  // an untouched new note is never stored
+  if (!CH.dirty && e.id) return;
+  e.updated = Date.now(); const rec = JSON.parse(JSON.stringify(e));
+  const id = await idb.put('church', rec); e.id = id; rec.id = id;
+  U.church = U.church.filter((x) => x.id !== id); U.church.push(rec); CH.dirty = false;
+}
+async function closeChurchEditor() {
+  await chSave(); CH.entry = null; closeModal(); refreshAfterEdit();
+}
+function chSetType(t) {
+  const bl = CH.entry.blocks; const i = Math.min(CH.focus, bl.length - 1); const cur = bl[i];
+  if (cur.t === 'v') { bl.splice(i + 1, 0, { t, x: '' }); chRender(i + 1, 0); }
+  else { cur.t = cur.t === t ? 'p' : t; chRender(i); }
+  chSchedule();
+}
+function chKeydown(ev) {
+  const ta = ev.target; const i = +ta.dataset.i; const bl = CH.entry.blocks; const cur = bl[i]; if (!cur) return;
+  if (ev.key === 'Enter' && !ev.shiftKey) {
+    ev.preventDefault();
+    if (cur.t === 'li' && !cur.x.trim()) { cur.t = 'p'; chRender(i, 0); chSchedule(); return; }   // Enter on an empty bullet ends the list
+    const before = cur.x.slice(0, ta.selectionStart), after = cur.x.slice(ta.selectionEnd);
+    cur.x = before; bl.splice(i + 1, 0, { t: cur.t === 'li' ? 'li' : 'p', x: after }); chRender(i + 1, 0); chSchedule(); return;
+  }
+  if (ev.key === 'Backspace' && ta.selectionStart === 0 && ta.selectionEnd === 0) {
+    if (cur.t !== 'p') { ev.preventDefault(); cur.t = 'p'; chRender(i, 0); chSchedule(); return; }
+    if (i === 0) return;
+    ev.preventDefault(); const prev = bl[i - 1];
+    if (prev.t === 'v') {
+      if (!cur.x && bl.some((b, j) => j !== i && b.t !== 'v')) { bl.splice(i, 1); const j = bl.findIndex((b, k) => k >= i && b.t !== 'v'); chRender(j >= 0 ? j : bl.map((b) => b.t).lastIndexOf('p'), 0); chSchedule(); }
+      return;
+    }
+    const at = prev.x.length; prev.x += cur.x; bl.splice(i, 1); chRender(i - 1, at); chSchedule();
+  }
+}
+function openVersePanel() {
+  $('#vpanel').hidden = false; $('#ch-tools').hidden = true; const inp = $('#vp-input'); inp.value = ''; vpPreview(); inp.focus();
+}
+function closeVersePanel() { const p = $('#vpanel'); if (p) p.hidden = true; const t = $('#ch-tools'); if (t) t.hidden = false; }
+function vpParse() {
+  const q = ($('#vp-input')?.value || '').trim(); if (!q) return { hint: 'Type a verse, then tap Add verse.' };
+  const r = parseRef(q);
+  if (!r) return { hint: 'Keep typing… for example: Psalm 23:1, 1 Cor 13:4-7, John 3:16' };
+  if (!r.v1) return { hint: `Add a verse number, like ${fmtRef(r.b, r.c, 1)}.` };
+  if ((r.v2 || r.v1) - r.v1 > 29) return { hint: 'Choose 30 verses or fewer.' };
+  return { ref: r };
+}
+function vpPreview() {
+  const { ref, hint } = vpParse(); const box = $('#vp-preview'); if (!box) return;
+  box.innerHTML = ref ? `<div class="vp-text">${esc(rangeText(ref.b, ref.c, ref.v1, ref.v2 || ref.v1))}</div><div class="vp-ref">${esc(fmtRef(ref.b, ref.c, ref.v1, ref.v2))} ESV</div>` +
+    '<button class="btn primary" data-act="chverseadd">Add verse</button>' : `<div class="muted small">${esc(hint)}</div>`;
+}
+function chInsertVerse() {
+  const { ref } = vpParse(); if (!ref) return;
+  const bl = CH.entry.blocks; const i = Math.min(CH.focus, bl.length - 1); const cur = bl[i];
+  const vb = { t: 'v', b: ref.b, c: ref.c, v1: ref.v1, v2: ref.v2 || ref.v1 };
+  if (cur.t !== 'v' && !cur.x.trim()) bl.splice(i, 1, vb); else bl.splice(i + 1, 0, vb);   // an empty line is replaced by the verse
+  const vi = bl.indexOf(vb); if (vi === bl.length - 1 || bl[vi + 1].t === 'v') bl.splice(vi + 1, 0, blankBlock());
+  closeVersePanel(); chRender(vi + 1, 0); chSchedule();
+}
+async function deleteChurch() {
+  if (!confirm('Delete this church note?')) return;
+  const id = CH.entry?.id; if (id) { await idb.del('church', id); U.church = U.church.filter((x) => x.id !== id); }
+  clearTimeout(CH.saveTimer); CH.entry = null; closeModal(); refreshAfterEdit(); toast('Note deleted');
 }
 
 /* ---------- Modal ---------- */
@@ -600,7 +737,7 @@ function openModal(title, html, ctx = {}) {
   m.innerHTML = `<div class="modal-head"><span>${esc(title)}</span><button class="iconbtn" data-act="closemodal" aria-label="Close">✕</button></div><div class="modal-body">${html}</div>`;
   m.hidden = false; $('.modal-body', m).scrollTop = 0;
 }
-function closeModal() { $('#modal').hidden = true; $('#modal').innerHTML = ''; MODAL.ctx = {}; }
+function closeModal() { const m = $('#modal'); m.hidden = true; m.innerHTML = ''; m.style.top = m.style.height = m.style.bottom = ''; MODAL.ctx = {}; }
 
 function openPicker(step = 'books', b = R.b) {
   if (step === 'books') {
@@ -619,17 +756,6 @@ function openAppearance() {
 }
 
 /* ---------- Today ---------- */
-const VOTD = ['Genesis 1:27', 'Joshua 1:9', 'Psalm 23:1-3', 'Psalm 27:1', 'Psalm 34:8', 'Psalm 46:1', 'Psalm 91:1-2', 'Psalm 119:105', 'Psalm 121:1-2',
-  'Proverbs 3:5-6', 'Proverbs 16:3', 'Isaiah 40:31', 'Isaiah 41:10', 'Isaiah 53:5', 'Jeremiah 29:11', 'Lamentations 3:22-23', 'Micah 6:8', 'Nahum 1:7',
-  'Zephaniah 3:17', 'Matthew 5:16', 'Matthew 6:33', 'Matthew 11:28', 'Matthew 28:19-20', 'Mark 10:45', 'Luke 1:37', 'John 1:1', 'John 3:16', 'John 8:12',
-  'John 10:10', 'John 14:6', 'John 14:27', 'John 15:5', 'John 16:33', 'Acts 1:8', 'Romans 5:8', 'Romans 8:1', 'Romans 8:28', 'Romans 8:38-39', 'Romans 12:2',
-  '1 Corinthians 13:4-7', '1 Corinthians 15:58', '2 Corinthians 5:17', '2 Corinthians 12:9', 'Galatians 2:20', 'Galatians 5:22-23', 'Ephesians 2:8-9',
-  'Philippians 4:6-7', 'Philippians 4:13', 'Colossians 3:23', '1 Thessalonians 5:16-18', '2 Timothy 1:7', 'Hebrews 11:1', 'Hebrews 12:1-2', 'James 1:2-3',
-  '1 Peter 5:7', '1 John 4:19', 'Revelation 21:4'];
-function votdRef() {
-  const list = VOTD.map(parseRef).filter(Boolean);   // text always comes from the Bible data, never hard-coded
-  return list[dayNumber() % list.length];
-}
 const CAL = { y: new Date().getFullYear(), m: new Date().getMonth() };
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 function calendarHTML() {
@@ -649,8 +775,6 @@ function renderToday() {
   const hr = now.getHours(); const greet = hr < 12 ? 'Good morning' : hr < 18 ? 'Good afternoon' : 'Good evening';
   setTop('', { actions: '<button data-act="settings" aria-label="Settings"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.600 5.600L7 7M17 17l1.400 1.400M5.600 18.400L7 17M17 7l1.400-1.400"/></svg></button>' });
   const pos = store.get('pos', { b: 0, c: 1, v: 1 });
-  const r = votdRef(); const v2 = r.v2 || r.v1;
-  const txt = rangeText(r.b, r.c, r.v1, v2);
   const streak = streakDays(); const total = readDayCount(); const readToday = isReadDay(isoDate());
   const week = Array.from({ length: 7 }, (_, i) => {
     const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() - now.getDay() + i);
@@ -664,8 +788,6 @@ function renderToday() {
     `<div class="week">${week}</div><div class="status">${readToday ? '✓ You’ve read today' : `Read for ${READ_SECONDS} seconds to log today`}</div>` +
     `<button class="linkbtn" data-act="calendar">${CALOPEN ? 'Hide calendar' : 'Show calendar'}</button>${CALOPEN ? `<div class="calwrap">${calendarHTML()}</div>` : ''}</section>`;
   html += journalSection() + prayerHomeSection();
-  html += `<section class="votd"><div class="eyebrow">Verse of the day</div><blockquote>${esc(txt)}</blockquote><div class="votd-ref">${esc(fmtRef(r.b, r.c, r.v1, r.v2))} ESV</div>` +
-    `<div class="row"><button class="btn" data-act="open" data-b="${r.b}" data-c="${r.c}" data-v="${r.v1}">Read in context</button><button class="btn" data-act="votdshare">Share</button></div></section>`;
   [...U.plans.values()].filter((p) => p.start).forEach((p) => {
     const def = PLANS.find((x) => x.id === p.id); if (!def) return;
     const day = Math.min(def.days - 1, Math.max(0, dayNumber() - dayNumberOfIso(p.start))); const done = p.done?.[day];
@@ -723,7 +845,7 @@ function markText(text, re) {
   return out + esc(text.slice(last));
 }
 /* ---------- Search across the Bible and everything you have written ---------- */
-const SCOPES = [['all', 'All'], ['bible', 'Bible'], ['journal', 'Journal'], ['prayers', 'Prayers'], ['notes', 'Notes'], ['verses', 'Verses']];
+const SCOPES = [['all', 'All'], ['bible', 'Bible'], ['journal', 'Journal'], ['prayers', 'Prayers'], ['notes', 'Notes'], ['verses', 'Verses'], ['church', 'Church']];
 function parseQuery(q) {
   const terms = [], phrases = []; const re = /"([^"]+)"|(\S+)/g; let m;
   while ((m = re.exec(q))) {
@@ -745,7 +867,8 @@ function excerptHTML(text, re, max = 200) {   // a window of text around the fir
   return (start > 0 ? '\u2026' : '') + markText(text.slice(start, end), re) + (end < text.length ? '\u2026' : '');
 }
 function personalResults(pq) {
-  const out = { journal: [], prayers: [], notes: [], verses: [] };
+  const out = { church: [], journal: [], prayers: [], notes: [], verses: [] };
+  out.church = U.church.filter((e) => matchesQuery(chText(e), pq)).sort((a, b) => (a.date < b.date ? 1 : -1));
   U.habit.forEach((rec) => {
     const chs = rec.chapters?.length ? fmtChapterList(rec.chapters) : [];
     if (!rec.journal && !chs.length) return;
@@ -763,6 +886,8 @@ function personalResults(pq) {
 }
 const badge = (t) => `<span class="badge">${t}</span>`;
 const SECTIONS = {
+  church: { title: 'Church notes', item: (e, re) => `<li class="item" data-open data-act="churchopen" data-id="${e.id}"><div class="ref">${esc(dayTitle(e.date, false))}${badge('Church')}</div>` +
+    `<div class="ctitle">${markText(e.title.trim() || 'Untitled', re)}</div><div class="jtxt">${excerptHTML(chBody(e), re)}</div></li>` },
   journal: { title: 'Journal', item: (x, re) => `<li class="item" data-open data-act="day" data-date="${x.rec.date}"><div class="ref">${esc(dayTitle(x.rec.date, false))}${badge('Journal')}</div>` +
     (x.rec.journal ? `<div class="jtxt">${excerptHTML(x.rec.journal, re)}</div>` : '') +
     (x.chs.length ? `<div class="small muted" style="margin-top:3px">Read: ${markText(x.chs.map((c) => c.label).join(', '), re)}</div>` : '') + '</li>' },
@@ -797,7 +922,7 @@ function drawResults() {
     return `<div class="resgroup"><div class="eyebrow">${title} \u00B7 ${count.toLocaleString()}</div><ul class="list">${itemsHtml}</ul>` +
       (more ? `<button class="linkbtn" data-act="${all ? 'scope' : 'moreresults'}" data-scope="${key}">${all ? `See all ${count.toLocaleString()}` : 'Show more'}</button>` : '') + '</div>';
   };
-  for (const key of ['journal', 'prayers', 'notes', 'verses']) {
+  for (const key of ['church', 'journal', 'prayers', 'notes', 'verses']) {
     if (!personal[key] || (!all && SR.scope !== key)) continue;
     const arr = personal[key]; html += section(key, SECTIONS[key].title, arr.length, arr.slice(0, limit).map((x) => SECTIONS[key].item(x, pre)).join(''), arr.length > limit);
   }
@@ -918,7 +1043,7 @@ async function storageStatus() {
   el.textContent = msg;
 }
 async function exportBackup() {
-  const data = { app: 'esv-bible', version: 1, exported: new Date().toISOString(), highlights: [...U.hl.values()], notes: U.notes, bookmarks: [...U.bm.values()], plans: [...U.plans.values()], habit: [...U.habit.values()], tags: [...U.tags.values()], prayers: U.prayers, settings: S };
+  const data = { app: 'esv-bible', version: 1, exported: new Date().toISOString(), highlights: [...U.hl.values()], notes: U.notes, bookmarks: [...U.bm.values()], plans: [...U.plans.values()], habit: [...U.habit.values()], tags: [...U.tags.values()], prayers: U.prayers, church: U.church, settings: S };
   const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
   const file = new File([blob], `esv-bible-backup-${isoDate()}.json`, { type: 'application/json' });
   try { if (navigator.canShare?.({ files: [file] })) { await navigator.share({ files: [file], title: 'ESV Bible backup' }); return; } } catch (e) { if (e.name === 'AbortError') return; }
@@ -932,6 +1057,7 @@ async function importBackup(file) {
     for (const b of d.bookmarks || []) { U.bm.set(b.ref, b); await idb.put('bookmarks', b); }
     for (const p of d.plans || []) { U.plans.set(p.id, p); await idb.put('plans', p); }
     for (const t of d.tags || []) { const merged = [...tagsOf(t.ref)]; (t.tags || []).forEach((x) => { if (!merged.some((m) => sameTag(m, x))) merged.push(x); }); await writeTags(t.ref, merged); }
+    for (const ch of d.church || []) { const o = { ...ch }; delete o.id; const id = await idb.put('church', o); o.id = id; U.church.push(o); }
     for (const pr of d.prayers || []) { const o = { ...pr }; delete o.id; const id = await idb.put('prayers', o); o.id = id; U.prayers.push(o); }
     for (const h of d.habit || []) { const rec = typeof h === 'string' ? { date: h, t: Date.now(), chapters: [], journal: '' } : h; U.habit.set(rec.date, rec); await idb.put('habit', rec); }
     for (const n of d.notes || []) { const o = { ...n }; delete o.id; const id = await idb.put('notes', o); o.id = id; U.notes.push(o); }
@@ -959,13 +1085,24 @@ const ACT = {
   tagback: () => { L.tag = null; renderLibrary(); },
   tagrename: (e) => renameTag(e.dataset.tag),
   tagdelete: (e) => deleteTag(e.dataset.tag),
-  votdshare: () => { const r = votdRef(); shareText(quoteString(rangeText(r.b, r.c, r.v1, r.v2 || r.v1), fmtRef(r.b, r.c, r.v1, r.v2))); },
   share: shareSelection,
   settings: () => setTab('settings'),
   gotab: (e) => setTab(e.dataset.tab),
+  churchnew: () => openChurchEditor(0),
+  churchopen: (e) => openChurchEditor(+e.dataset.id),
+  churchback: closeChurchEditor,
+  churchdel: deleteChurch,
+  chheading: () => chSetType('h'),
+  chbullet: () => chSetType('li'),
+  chverse: openVersePanel,
+  chverseclose: () => { closeVersePanel(); $(`#ch-blocks textarea[data-i="${Math.min(CH.focus, CH.entry.blocks.length - 1)}"]`)?.focus(); },
+  chverseadd: chInsertVerse,
+  chdone: () => document.activeElement?.blur(),
+  chdelblock: (e) => { const bl = CH.entry.blocks; bl.splice(+e.dataset.i, 1); if (!bl.some((b) => b.t !== 'v')) bl.push(blankBlock()); chRender(null); chSchedule(); },
   prayeradd: () => openPrayerEditor(0),
   prayeredit: (e) => openPrayerEditor(+e.dataset.id),
   prayertoggle: (e) => togglePrayed(+e.dataset.id),
+  prayeruncheck: async () => { for (const p of U.prayers.filter((x) => !x.answered && isChecked(x))) { p.checked = false; await idb.put('prayers', p); } renderPrayer(); },
   prayersave: (e) => submitPrayer(+e.dataset.id || 0),
   prayeranswered: (e) => openAnsweredForm(+e.dataset.id),
   prayeranswersave: (e) => setAnswered(+e.dataset.id, true, isoDate(), ($('#ans-note')?.value || '').trim()),
@@ -1016,6 +1153,9 @@ document.addEventListener('input', (ev) => {
     if (TAB === 'read') { const t = $('#view').scrollTop; renderRead(); $('#view').scrollTop = t; }
     return;
   }
+  if (ev.target.matches?.('#ch-blocks textarea')) { const i = +ev.target.dataset.i; CH.entry.blocks[i].x = ev.target.value; chAutosize(ev.target); chSchedule(); return; }
+  if (ev.target.id === 'ch-title') { CH.entry.title = ev.target.value.replace(/\n/g, ' '); chAutosize(ev.target); chSchedule(); return; }
+  if (ev.target.id === 'vp-input') { vpPreview(); return; }
   if (ev.target.id === 'q') { SR.q = ev.target.value; SR.shown = 100; clearTimeout(SR.t); SR.t = setTimeout(drawResults, 120); }
 });
 document.addEventListener('submit', async (ev) => {
@@ -1025,6 +1165,17 @@ document.addEventListener('submit', async (ev) => {
   const name = allTagNames().find((t) => sameTag(t, typed)) || typed;   // reuse an existing tag's spelling
   await setTagForSelection(name, true); refreshTagEditor(); toast(`Tagged \u201C${name}\u201D`);
 });
+document.addEventListener('change', (ev) => {
+  if (ev.target.id === 'ch-date' && CH.entry && ev.target.value) { CH.entry.date = ev.target.value; $('#ch-datelabel').textContent = dayTitle(CH.entry.date); chSchedule(); }
+});
+document.addEventListener('focusin', (ev) => { if (ev.target.matches?.('#ch-blocks textarea')) CH.focus = +ev.target.dataset.i; });
+document.addEventListener('keydown', (ev) => {
+  if (ev.target.matches?.('#ch-blocks textarea')) return chKeydown(ev);
+  if (ev.target.id === 'ch-title' && ev.key === 'Enter') { ev.preventDefault(); const t = $('#ch-blocks textarea'); if (t) { t.focus(); } }
+  if (ev.target.id === 'vp-input' && ev.key === 'Enter') { ev.preventDefault(); chInsertVerse(); }
+});
+// keep the cursor (and keyboard) in the note while tapping the editor toolbar
+document.addEventListener('mousedown', (ev) => { if (ev.target.closest?.('#ch-tools, #vpanel button')) ev.preventDefault(); });
 document.addEventListener('change', async (ev) => {
   if (ev.target.id === 'importfile' && ev.target.files[0]) importBackup(ev.target.files[0]);
   if (ev.target.id === 'biblefile' && ev.target.files[0]) {
