@@ -785,7 +785,7 @@ function renderToday() {
     `<button class="resume" data-act="resume"><span class="lbl">Pick up where you left off</span><span class="where">${esc(fmtRef(pos.b, pos.c, pos.v > 1 ? pos.v : 0))}</span>` +
     `<svg viewBox="0 0 24 24"><path d="M9 5l7 7-7 7"/></svg></button>` +
     `<section class="habit"><div class="stats"><div><b>${streak}</b><span>day streak</span></div><div><b>${total}</b><span>days read</span></div></div>` +
-    `<div class="week">${week}</div><div class="status">${readToday ? '✓ You’ve read today' : `Read for ${READ_SECONDS} seconds to log today`}</div>` +
+    `<div class="week">${week}</div>${readToday ? '<div class="status">✓ You’ve read today</div>' : ''}` +
     `<button class="linkbtn" data-act="calendar">${CALOPEN ? 'Hide calendar' : 'Show calendar'}</button>${CALOPEN ? `<div class="calwrap">${calendarHTML()}</div>` : ''}</section>`;
   html += journalSection() + prayerHomeSection();
   [...U.plans.values()].filter((p) => p.start).forEach((p) => {
