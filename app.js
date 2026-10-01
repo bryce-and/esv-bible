@@ -4,9 +4,7 @@
 'use strict';
 
 const APP_VERSION = '1.0.0';
-const NOTICE = 'Scripture quotations are from the ESV® Bible (The Holy Bible, English Standard Version®), © 2001 by Crossway, ' +
-  'a publishing ministry of Good News Publishers. ESV Text Edition: 2016. Used by permission. All rights reserved. ' +
-  'This copy is for personal use only.';
+const NOTICE = 'The Holy Bible, English Standard Version\u00AE (ESV\u00AE), ESV Text Edition: 2016. \u00A9 2001 by Crossway. All rights reserved.';
 const COLORS = ['yellow', 'green', 'blue', 'pink', 'orange'];
 
 /* ---------- helpers ---------- */
@@ -207,7 +205,16 @@ function applySettings() {
   const r = document.documentElement;
   r.dataset.theme = S.theme;
   r.style.setProperty('--reader-size', S.size + 'px');
-  $('#meta-theme').content = isDark() ? '#0f1114' : '#fbfaf7';
+  applyThemeColor();
+}
+const THEME_COLOR = { light: '#fbfaf7', dark: '#0f1114' };
+function applyThemeColor() {   // keeps the status-bar / browser colour and the home-screen icon in step with the chosen theme
+  $$('meta[name="theme-color"]').forEach((m) => {
+    const scheme = m.dataset.scheme === 'dark' ? 'dark' : 'light';
+    if (S.theme === 'auto') { m.content = THEME_COLOR[scheme]; m.setAttribute('media', `(prefers-color-scheme: ${scheme})`); }
+    else { m.content = THEME_COLOR[isDark() ? 'dark' : 'light']; m.removeAttribute('media'); }
+  });
+  const icon = $('link[rel="apple-touch-icon"]'); if (icon) icon.setAttribute('href', isDark() ? 'apple-touch-icon-dark.png' : 'apple-touch-icon.png');
 }
 const saveSettings = () => { store.set('settings', S); applySettings(); };
 matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', applySettings);

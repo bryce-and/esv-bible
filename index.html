@@ -6,13 +6,30 @@
 <title>ESV Bible</title>
 <meta name="description" content="Offline ESV Bible reader">
 <link rel="manifest" href="manifest.webmanifest">
-<meta name="theme-color" content="#fbfaf7" id="meta-theme">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#fbfaf7" media="(prefers-color-scheme: light)" data-scheme="light">
+<meta name="theme-color" content="#0f1114" media="(prefers-color-scheme: dark)" data-scheme="dark">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="ESV Bible">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
-<link rel="icon" type="image/png" href="icon-192.png">
+<link rel="icon" type="image/png" href="icon-192.png" media="(prefers-color-scheme: light)">
+<link rel="icon" type="image/png" href="icon-dark-192.png" media="(prefers-color-scheme: dark)">
+<script>
+/* Runs before first paint: apply the saved theme to the page, the status-bar colour and the home-screen icon,
+   so a dark app never flashes a white bar. */
+(function () {
+  try {
+    var s = JSON.parse(localStorage.getItem('settings') || '{}'), t = s.theme || 'auto';
+    var dark = t === 'dark' || (t !== 'light' && matchMedia('(prefers-color-scheme: dark)').matches);
+    document.documentElement.setAttribute('data-theme', t === 'dark' || t === 'light' ? t : 'auto');
+    document.documentElement.style.background = dark ? '#0f1114' : '#fbfaf7';
+    if (t === 'dark' || t === 'light') document.querySelectorAll('meta[name=theme-color]').forEach(function (m) { m.removeAttribute('media'); m.setAttribute('content', dark ? '#0f1114' : '#fbfaf7'); });
+    if (dark) { var l = document.querySelector('link[rel=apple-touch-icon]'); if (l) l.setAttribute('href', 'apple-touch-icon-dark.png'); }
+  } catch (e) { /* storage blocked: the stylesheet defaults apply */ }
+})();
+</script>
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
